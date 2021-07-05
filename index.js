@@ -1,6 +1,12 @@
 
 require('dotenv').config();
 
+const {
+    REDIS_URL,
+    DO_API_TOKEN,
+    CRYPTLEX_API_CACHE_SECONDS
+} = process.env;
+
 const redis = require('redis');
 const express = require('express');
 const DigitalOcean = require('do-wrapper').default;
@@ -11,23 +17,30 @@ const {Validator: IpValidator} = require('ip-num/Validator');
 const RedisPromise = require('./lib/redis-promise');
 const authChecker = require('./lib/auth-checker');
 const {isValidLicenseId, getLicenseIdByLicenseKey} = require('./lib/cryptlex-api');
+const {createRedisCache} = require('./lib/cache');
 
 const Redlock = require('redlock');
 
 const router = express.Router()
 
-const redisClient = new RedisPromise(redis.createClient(process.env.REDIS_URL));
+const redisClient = new RedisPromise(redis.createClient(REDIS_URL));
 const redlock = new Redlock([redisClient.originalClient]);
-const doClient = new DigitalOcean(process.env.DO_API_TOKEN);
+const doClient = new DigitalOcean(DO_API_TOKEN);
 
 const logger = require('./logger');
 
+const isValidLicenseIdCache = createRedisCache(redisClient, 'license_id_validation',
+    (token) => isValidLicenseId(token), Boolean, CRYPTLEX_API_CACHE_SECONDS);
+
+const getLicenseIdByLicenseKeyCache = createRedisCache(redisClient, 'license_key_id_mapping',
+    (licenseKey) => getLicenseIdByLicenseKey(licenseKey), String, CRYPTLEX_API_CACHE_SECONDS);
+
 const clientAuthChecker = authChecker(
-    async (token) => await isValidLicenseId(token)
+    async (token) => await isValidLicenseIdCache(token)
 );
 
 const optionalClientAuthChecker = authChecker(
-    async (token) => await isValidLicenseId(token),
+    async (token) => await isValidLicenseIdCache(token),
     true
 );
 
@@ -296,7 +309,7 @@ router.post('/get-license-id', wrap(async(req, res) => {
     }
 
     try {
-        const licenseId = await getLicenseIdByLicenseKey(licenseKey);
+        const licenseId = await getLicenseIdByLicenseKeyCache(licenseKey);
         res.json({success: true, licenseId});
     } catch (err) {
         logger.error('get license id endpoint', err);
