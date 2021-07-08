@@ -8,7 +8,9 @@ const {
     ADMIN_TOKEN,
     SUB_DOMAIN_TTL,
     ROOT_DOMAIN,
-    APP_PORT
+    APP_PORT,
+    SUBDOMAIN_CHANGE_RATE_LIMIT_COUNT,
+    SUBDOMAIN_CHANGE_RATE_LIMIT_RELEASE_SECONDS
 } = process.env;
 
 const redis = require('redis');
@@ -161,10 +163,32 @@ async function destroyActualClientConfig(authToken) {
     await redisClient.hdel('client_subdomains_last', authToken);
 }
 
+async function subdomainRateLimitCheck(subdomain, authToken) {
+
+    const actualSubdomain = await redisClient.hget('client_subdomains_last', authToken);
+
+    if (actualSubdomain && actualSubdomain === subdomain) {
+        return;
+    }
+
+    const key = 'client_rate_limit:' + authToken;
+
+    if (!await redisClient.exists(key)) {
+        await redisClient.setex(key, SUBDOMAIN_CHANGE_RATE_LIMIT_RELEASE_SECONDS, 0);
+    }
+
+    const currentLimit = parseInt(await redisClient.incr(key));
+
+    if (currentLimit > SUBDOMAIN_CHANGE_RATE_LIMIT_COUNT) {
+        throw new Error('Subdomain name change rate limit is exceeded');
+    }
+}
+
 async function applySubdomainRecord(type, authToken, subdomain, data, prefix = '') {
     const lock = await redlock.lock('subdomain_record_attempt:' + subdomain, 50000);
 
     try {
+        await subdomainRateLimitCheck(subdomain, authToken);
         await isSubdomainAvailable(subdomain, authToken)
         await updateSubdomainRecord(type, authToken, subdomain, data, prefix);
         await updateLatestSubdomainBook(type, authToken, subdomain);
