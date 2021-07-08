@@ -4,14 +4,17 @@ require('dotenv').config();
 const {
     REDIS_URL,
     DO_API_TOKEN,
-    CRYPTLEX_API_CACHE_SECONDS
+    CRYPTLEX_API_CACHE_SECONDS,
+    ADMIN_TOKEN,
+    SUB_DOMAIN_TTL,
+    ROOT_DOMAIN,
+    APP_PORT
 } = process.env;
 
 const redis = require('redis');
 const express = require('express');
 const DigitalOcean = require('do-wrapper').default;
 const { wrap } = require('@awaitjs/express');
-const { v4: uuidv4 } = require('uuid');
 const {Validator: IpValidator} = require('ip-num/Validator');
 
 const RedisPromise = require('./lib/redis-promise');
@@ -45,7 +48,7 @@ const optionalClientAuthChecker = authChecker(
 );
 
 const adminAuthChecker = authChecker(
-    async (token) => process.env.ADMIN_TOKEN === token
+    async (token) => ADMIN_TOKEN === token
 );
 
 
@@ -87,17 +90,17 @@ async function updateSubdomainRecord(type, authToken, subdomain, address, prefix
         type: type.toUpperCase(),
         name: prefix + subdomain,
         data: address,
-        ttl: process.env.SUB_DOMAIN_TTL
+        ttl: SUB_DOMAIN_TTL
     };
 
     const domainRecordId = await redisClient.hget(resourceName, authToken);
 
     if (domainRecordId) {
         console.log('update record');
-        await doClient.domains.updateRecord(process.env.ROOT_DOMAIN, domainRecordId, options);
+        await doClient.domains.updateRecord(ROOT_DOMAIN, domainRecordId, options);
     } else {
         console.log('create record');
-        const {domain_record: {id: domainRecordId}} = await doClient.domains.createRecord(process.env.ROOT_DOMAIN, options);
+        const {domain_record: {id: domainRecordId}} = await doClient.domains.createRecord(ROOT_DOMAIN, options);
         await redisClient.hset(resourceName, authToken, domainRecordId);
     }
 
@@ -136,6 +139,28 @@ async function getActualClientConfig(authToken) {
     };
 }
 
+async function destroyActualClientConfig(authToken) {
+
+    const subdomain = await redisClient.hget('client_subdomains_last', authToken);
+
+    if (!subdomain) {
+        throw new Error('there is no subdomain registered before for this client');
+    }
+
+    for (const target of ['a', 'aaaa']) {
+        const recordId = await redisClient.hget('client_subdomain_' + target + '_id', authToken);
+
+        if (recordId) {
+            await doClient.domains.deleteRecord(ROOT_DOMAIN, recordId);
+            await redisClient.hdel('client_subdomain_' + target + '_id', authToken);
+        }
+
+        await redisClient.hdel('client_subdomain_' + target + '_address', subdomain);
+    }
+
+    await redisClient.hdel('client_subdomains_last', authToken);
+}
+
 async function applySubdomainRecord(type, authToken, subdomain, data, prefix = '') {
     const lock = await redlock.lock('subdomain_record_attempt:' + subdomain, 50000);
 
@@ -156,7 +181,7 @@ async function cleanValidationData(authToken) {
         throw new Error('validation data is not exists');
     }
 
-    await doClient.domains.deleteRecord(process.env.ROOT_DOMAIN, recordId);
+    await doClient.domains.deleteRecord(ROOT_DOMAIN, recordId);
     await redisClient.hdel('client_subdomain_txt_id', authToken);
 }
 
@@ -214,7 +239,6 @@ async function isSubdomainExpired(subdomain, expireTime) {
 }
 
 const app = express();
-const port = process.env.APP_PORT;
 
 app.use(express.json())
 app.use('/subdomain-provider', router);
@@ -257,6 +281,19 @@ router.get('/actual-configuration', clientAuthChecker, wrap(async(req, res) => {
 
 }));
 
+router.delete('/actual-configuration', clientAuthChecker, wrap(async (req, res) => {
+
+    const {authToken} = res.locals;
+
+    try {
+        await destroyActualClientConfig(authToken)
+        res.json({success: true});
+    } catch (err) {
+        res.json({success: false, message: err.message});
+    }
+
+}));
+
 router.purge('/orphan-name-list', adminAuthChecker, wrap(async(req, res) => {
 
     const {expireTime} = req.body;
@@ -293,8 +330,8 @@ router.get('/manifest', wrap(async (req, res) => {
 
     res.json({
         success: true,
-        root_domain: process.env.ROOT_DOMAIN,
-        sub_domain_ttl: process.env.SUB_DOMAIN_TTL
+        root_domain: ROOT_DOMAIN,
+        sub_domain_ttl: SUB_DOMAIN_TTL
     });
 
 }));
@@ -435,6 +472,6 @@ router.delete('/clean-validation-data', clientAuthChecker, wrap(async (req, res)
 
 }));
 
-app.listen(port, () => {
-    console.log(`app listening at http://localhost:${port}`);
+app.listen(APP_PORT, () => {
+    console.log(`app listening at http://localhost:${APP_PORT}`);
 });
