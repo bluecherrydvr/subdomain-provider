@@ -143,24 +143,38 @@ async function getActualClientConfig(authToken) {
 
 async function destroyActualClientConfig(authToken) {
 
-    const subdomain = await redisClient.hget('client_subdomains_last', authToken);
+    const resourceNames = [
+        'client_subdomain_a_id',
+        'client_subdomain_aaaa_id',
+        'actual_config_destroy'
+    ];
 
-    if (!subdomain) {
-        throw new Error('there is no subdomain registered before for this client');
-    }
+    // lock expire time is 30 seconds
+    const lock = await redlock.lock(resourceNames.map(name => name + ':' + authToken), 30000);
 
-    for (const target of ['a', 'aaaa']) {
-        const recordId = await redisClient.hget('client_subdomain_' + target + '_id', authToken);
+    try {
+        const subdomain = await redisClient.hget('client_subdomains_last', authToken);
 
-        if (recordId) {
-            await doClient.domains.deleteRecord(ROOT_DOMAIN, recordId);
-            await redisClient.hdel('client_subdomain_' + target + '_id', authToken);
+        if (!subdomain) {
+            throw new Error('there is no subdomain registered before for this client');
         }
 
-        await redisClient.hdel('client_subdomain_' + target + '_address', subdomain);
+        for (const target of ['a', 'aaaa']) {
+            const recordId = await redisClient.hget('client_subdomain_' + target + '_id', authToken);
+
+            if (recordId) {
+                await doClient.domains.deleteRecord(ROOT_DOMAIN, recordId);
+                await redisClient.hdel('client_subdomain_' + target + '_id', authToken);
+            }
+
+            await redisClient.hdel('client_subdomain_' + target + '_address', subdomain);
+        }
+
+        await redisClient.hdel('client_subdomains_last', authToken);
+    } finally {
+        await lock.unlock();
     }
 
-    await redisClient.hdel('client_subdomains_last', authToken);
 }
 
 async function subdomainRateLimitCheck(subdomain, authToken) {
