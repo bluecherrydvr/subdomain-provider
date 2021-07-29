@@ -569,8 +569,7 @@ router.delete('/clean-validation-data', clientAuthChecker, wrap(async (req, res)
     try {
         await cleanValidationData(authToken);
     } catch (err) {
-        res.json({success: false, message: err.message});
-        return;
+        logger.log('clean validation data error', err);
     }
 
     res.json({success: true});
