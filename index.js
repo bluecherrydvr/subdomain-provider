@@ -399,7 +399,7 @@ router.delete('/actual-configuration', clientAuthChecker, wrap(async (req, res) 
 
 }));
 
-router.purge('/orphan-name-list', adminAuthChecker, wrap(async(req, res) => {
+router.delete('/orphan-name-list', adminAuthChecker, wrap(async(req, res) => {
 
     const {expireTime} = req.body;
 
