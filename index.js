@@ -98,10 +98,8 @@ async function updateSubdomainRecord(type, authToken, subdomain, address, prefix
     const domainRecordId = await redisClient.hget(resourceName, authToken);
 
     if (domainRecordId) {
-        console.log('update record');
         await doClient.domains.updateRecord(ROOT_DOMAIN, domainRecordId, options);
     } else {
-        console.log('create record');
         const {domain_record: {id: domainRecordId}} = await doClient.domains.createRecord(ROOT_DOMAIN, options);
         await redisClient.hset(resourceName, authToken, domainRecordId);
     }
@@ -139,6 +137,75 @@ async function getActualClientConfig(authToken) {
         subdomain,
         records
     };
+}
+
+async function getActualValidationData(authToken) {
+    const subdomain = await redisClient.hget('client_subdomains_last', authToken);
+
+    if (!subdomain) {
+        throw new Error('there is no subdomain registered before for this client');
+    }
+
+    const prefix = 'client_subdomain_txt_';
+
+    const result = [];
+    const addressLabel = prefix + 'address';
+    const idLabel = prefix + 'id';
+
+    try {
+        result.push({
+            success: true,
+            type: 'redis',
+            label: addressLabel,
+            data: await redisClient.hget(addressLabel, subdomain)
+        });
+    } catch (err) {
+        logger.log('get validation data error (redis)', err);
+        result.push({
+            success: false,
+            type: 'redis',
+            label: addressLabel
+        });
+    }
+
+    let recordId = null;
+
+    try {
+        recordId = await redisClient.hget(idLabel, authToken);
+        result.push({
+            success: true,
+            type: 'redis',
+            label: idLabel,
+            data: recordId
+        });
+    } catch (err) {
+        logger.log('get validation id error (redis)', err);
+        result.push({
+            success: false,
+            type: 'redis',
+            label: idLabel
+        });
+    }
+
+    if (!recordId) {
+        return result;
+    }
+
+    try {
+        result.push({
+            success: true,
+            type: 'dns',
+            data: await doClient.domains.getRecord(ROOT_DOMAIN, recordId)
+        });
+    } catch (err) {
+        logger.log('get validation data error (dns)', err);
+        result.push({
+            success: false,
+            type: 'dns'
+        });
+    }
+
+    return result;
 }
 
 async function destroyActualClientConfig(authToken) {
@@ -332,7 +399,7 @@ router.delete('/actual-configuration', clientAuthChecker, wrap(async (req, res) 
 
 }));
 
-router.purge('/orphan-name-list', adminAuthChecker, wrap(async(req, res) => {
+router.delete('/orphan-name-list', adminAuthChecker, wrap(async(req, res) => {
 
     const {expireTime} = req.body;
 
@@ -502,11 +569,22 @@ router.delete('/clean-validation-data', clientAuthChecker, wrap(async (req, res)
     try {
         await cleanValidationData(authToken);
     } catch (err) {
-        res.json({success: false, message: err.message});
-        return;
+        logger.log('clean validation data error', err);
     }
 
     res.json({success: true});
+
+}));
+
+router.get('/get-validation-data', clientAuthChecker, wrap(async (req, res) => {
+
+    const {authToken} = res.locals;
+
+    try {
+        res.json(await getActualValidationData(authToken));
+    } catch (err) {
+        res.json({success: false, message: err.message});
+    }
 
 }));
 
