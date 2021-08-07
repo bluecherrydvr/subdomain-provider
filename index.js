@@ -484,11 +484,16 @@ router.post('/ban-subdomain', adminAuthChecker, wrap(async(req, res) => {
 router.post('/assign-ip-address', clientAuthChecker, wrap( async (req, res) => {
 
     const {authToken} = res.locals;
-    const {ip_address, subdomain, type = 4} = req.body;
+    const {ip_address, type = 4} = req.body;
+    let {subdomain} = req.body;
 
     if (!ip_address) {
         res.json({success: false, message: 'ip address is not provided'});
         return;
+    }
+
+    if (!subdomain) {
+        subdomain = await redisClient.hget('client_subdomains_last', authToken);
     }
 
     if (!subdomain) {
